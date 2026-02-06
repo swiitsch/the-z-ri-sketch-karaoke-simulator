@@ -1,0 +1,5 @@
+{
+  "name": "The Zueri Sketch Karaoke Simulator",
+  "description": "A pixel-art karaoke game where you search for real songs and click scattered lyrics in sync with the rhythm. Choose your avatar and dominate the Züri night life.",
+  "requestFramePermissions": []
+}
