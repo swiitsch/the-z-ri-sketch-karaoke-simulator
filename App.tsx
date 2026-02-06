@@ -1,51 +1,29 @@
 
-import React, { useState, useEffect } from 'react';
-import { GameState, Character, SongData, ScoreData } from './types';
+import React, { useState } from 'react';
+import { GameState, Character, ScoreData, DifficultyLevel } from './types';
 import { CHARACTERS, OTHER_PEOPLE } from './constants';
-import { getSongLyrics } from './services/geminiService';
 import PixelButton from './components/PixelButton';
 import KaraokeArena from './components/KaraokeArena';
 
 const App: React.FC = () => {
   const [state, setState] = useState<GameState>(GameState.WELCOME);
   const [selectedChar, setSelectedChar] = useState<Character | null>(null);
-  const [songQuery, setSongQuery] = useState('');
-  const [songData, setSongData] = useState<SongData | null>(null);
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>(DifficultyLevel.EASY);
+  const [userLyrics, setUserLyrics] = useState('');
   const [score, setScore] = useState<ScoreData | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Map characters to TTS voices
-  const getVoiceForChar = (id: string) => {
-    switch (id) {
-      case 'pari': return 'Kore'; // Female
-      case 'vania': return 'Puck'; // Female
-      case 'claudie': return 'Puck'; // Female
-      case 'ramon': return 'Charon'; // Male
-      case 'philip': return 'Fenrir'; // Male - Deepest/Strongest
-      default: return 'Kore';
-    }
-  };
-
-  const startGame = async () => {
-    if (!songQuery) return;
-    setIsLoading(true);
-    setError(null);
-    try {
-      const data = await getSongLyrics(songQuery);
-      setSongData(data);
-      setState(GameState.PLAYING);
-    } catch (err: any) {
-      setError(err.message || "Something went wrong.");
-    } finally {
-      setIsLoading(false);
-    }
+  const startSession = () => {
+    if (!userLyrics.trim() || !selectedChar) return;
+    setState(GameState.PLAYING);
   };
 
   const resetGame = () => {
-    setSongData(null);
     setScore(null);
-    setSongQuery('');
+    setUserLyrics('');
+    setState(GameState.LOBBY);
+  };
+
+  const handleAbort = () => {
     setState(GameState.LOBBY);
   };
 
@@ -79,10 +57,10 @@ const App: React.FC = () => {
               <h1 className="text-2xl md:text-5xl font-bold text-yellow-400 drop-shadow-lg leading-tight animate-pulse">
                 THE ZÜRI SKETCH<br/>KARAOKE SIMULATOR
               </h1>
-              <p className="text-[10px] text-pink-500 font-bold uppercase tracking-[0.2em]">Pixel Art Edition</p>
+              <p className="text-[10px] text-pink-500 font-bold uppercase tracking-[0.2em]">Rhythmic Edition</p>
             </div>
             <p className="text-xs md:text-base text-gray-400 max-w-lg leading-relaxed">
-              The stage is yours. The crowd is hungry.<br/>Match the rhythm, hit the words, and become the Züri Legend.
+              No AI. No lag. Just your lyrics and your rhythm.<br/>Enter the bar and show them your timing.
             </p>
             <PixelButton onClick={() => setState(GameState.CHARACTER_SELECT)}>
               ENTER BAR
@@ -92,7 +70,7 @@ const App: React.FC = () => {
 
         {state === GameState.CHARACTER_SELECT && (
           <div className="flex-1 flex flex-col p-8 space-y-8 overflow-y-auto">
-            <h2 className="text-xl md:text-3xl text-yellow-400 text-center uppercase tracking-tighter">Choose Your Singer</h2>
+            <h2 className="text-xl md:text-3xl text-yellow-400 text-center uppercase tracking-tighter">Choose Your Legend</h2>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4 max-w-4xl mx-auto w-full">
               {CHARACTERS.map(char => (
                 <div 
@@ -129,56 +107,70 @@ const App: React.FC = () => {
         )}
 
         {state === GameState.LOBBY && selectedChar && (
-          <div className="flex-1 flex flex-col p-8 items-center justify-center space-y-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="flex flex-col md:flex-row items-center gap-8">
-              <div className="relative">
-                <img 
-                  src={selectedChar.image} 
-                  alt="Selected" 
-                  className="w-32 h-32 md:w-56 md:h-56 pixel-border bg-gray-800"
-                  style={{ imageRendering: 'pixelated' }}
-                />
-                <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 bg-pink-500 px-4 py-1 pixel-border text-[10px] whitespace-nowrap">
-                  MIC CHECK OK
-                </div>
-              </div>
-              <div className="space-y-4 text-center md:text-left">
-                <h3 className="text-2xl md:text-4xl text-yellow-400 uppercase font-black">{selectedChar.name}</h3>
-                <p className="text-[10px] text-gray-500 italic max-w-xs">"Zürich won't know what hit them once I start the show..."</p>
+          <div className="flex-1 flex flex-col p-6 items-center justify-start space-y-6 overflow-y-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex items-center gap-6">
+              <img 
+                src={selectedChar.image} 
+                alt="Selected" 
+                className="w-16 h-16 md:w-24 md:h-24 pixel-border bg-gray-800"
+                style={{ imageRendering: 'pixelated' }}
+              />
+              <div>
+                <h3 className="text-xl md:text-2xl text-yellow-400 uppercase font-black">{selectedChar.name}</h3>
+                <p className="text-[8px] text-gray-500">READY TO PERFORM</p>
               </div>
             </div>
 
-            <div className="w-full max-w-md space-y-4 pt-4">
-              <div className="relative">
-                <input 
-                  type="text" 
-                  placeholder="SONG OR ARTIST..."
-                  className="w-full p-4 bg-black/60 border-4 border-gray-800 text-[10px] uppercase outline-none focus:border-yellow-400 placeholder:text-gray-700 transition-colors"
-                  value={songQuery}
-                  onChange={(e) => setSongQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && startGame()}
-                />
+            <div className="w-full max-w-2xl flex flex-col space-y-3">
+              <label className="text-[10px] text-pink-500 uppercase font-bold tracking-widest">Difficulty:</label>
+              <div className="flex gap-2">
+                {[
+                  { id: DifficultyLevel.EASY, label: 'EASY (1.0s)', color: 'bg-green-600' },
+                  { id: DifficultyLevel.MEDIUM, label: 'MEDIUM (0.75s)', color: 'bg-orange-600' },
+                  { id: DifficultyLevel.HARD, label: 'HARD (0.5s)', color: 'bg-red-600' }
+                ].map((d) => (
+                  <button
+                    key={d.id}
+                    onClick={() => setDifficulty(d.id)}
+                    className={`flex-1 py-2 text-[8px] md:text-[10px] font-bold uppercase pixel-border transition-all ${
+                      difficulty === d.id ? `${d.color} text-white scale-105` : 'bg-gray-800 text-gray-500 opacity-60'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
               </div>
+            </div>
+
+            <div className="w-full max-w-2xl flex flex-col space-y-3">
+              <label className="text-[10px] text-pink-500 uppercase font-bold tracking-widest">Type your lyrics below:</label>
+              <textarea 
+                placeholder="EVERYBODY WAS KUNG FU FIGHTING..."
+                className="w-full h-32 md:h-40 p-4 bg-black/60 border-4 border-gray-800 text-xs md:text-sm uppercase outline-none focus:border-yellow-400 placeholder:text-gray-800 transition-colors font-mono resize-none leading-relaxed"
+                value={userLyrics}
+                onChange={(e) => setUserLyrics(e.target.value)}
+              />
               <PixelButton 
                 className="w-full" 
-                onClick={startGame}
-                disabled={!songQuery || isLoading}
+                onClick={startSession}
+                disabled={!userLyrics.trim()}
               >
-                {isLoading ? 'STAGE LIGHTS ON...' : 'GO TO STAGE'}
+                START THE SHOW
               </PixelButton>
-              {error && <p className="text-red-500 text-[8px] text-center mt-2 animate-bounce">{error}</p>}
             </div>
           </div>
         )}
 
-        {state === GameState.PLAYING && songData && selectedChar && (
+        {state === GameState.PLAYING && userLyrics && selectedChar && (
           <KaraokeArena 
-            song={songData} 
-            voiceName={getVoiceForChar(selectedChar.id)}
+            lyricsString={userLyrics} 
+            difficulty={difficulty}
+            character={selectedChar}
             onFinish={(results) => {
               setScore(results);
               setState(GameState.RESULTS);
             }} 
+            onAbort={handleAbort}
           />
         )}
 
@@ -186,12 +178,12 @@ const App: React.FC = () => {
           <div className="flex-1 flex flex-col items-center justify-center p-8 space-y-8 text-center animate-in fade-in zoom-in duration-500">
             <div className="relative">
               <h2 className="text-4xl text-yellow-400 uppercase mb-2">GIG OVER!</h2>
-              <p className="text-[10px] text-pink-500 font-black tracking-widest mb-8">THE ZÜRI SKETCH APPLAUDS</p>
+              <p className="text-[10px] text-pink-500 font-black tracking-widest mb-8">ZÜRI HEARTS YOU</p>
             </div>
             
             <div className="grid grid-cols-3 gap-8 mb-8 bg-black/60 p-8 pixel-border w-full max-w-2xl">
               <div className="space-y-2">
-                <p className="text-[8px] text-gray-500 uppercase">PERFECT HITS</p>
+                <p className="text-[8px] text-gray-500 uppercase">HITS</p>
                 <p className="text-3xl text-green-400 font-bold">{score.hits}</p>
               </div>
               <div className="space-y-2">
@@ -199,10 +191,8 @@ const App: React.FC = () => {
                 <p className="text-3xl text-red-500 font-bold">{score.misses}</p>
               </div>
               <div className="space-y-2 border-l-2 border-gray-800">
-                <p className="text-[8px] text-gray-500 uppercase">RANK</p>
-                <p className="text-3xl text-white font-bold">
-                  {score.accuracy > 90 ? 'S' : score.accuracy > 70 ? 'A' : score.accuracy > 50 ? 'B' : 'F'}
-                </p>
+                <p className="text-[8px] text-gray-500 uppercase">ACCURACY</p>
+                <p className="text-3xl text-white font-bold">{score.accuracy}%</p>
               </div>
             </div>
 
@@ -216,7 +206,7 @@ const App: React.FC = () => {
       </div>
 
       <div className="fixed top-4 left-4 text-[8px] text-gray-700 pointer-events-none uppercase tracking-tighter">
-        The Züri Sketch // Audio Engine v2.3
+        The Züri Sketch // Local Engine v3.0
       </div>
     </div>
   );

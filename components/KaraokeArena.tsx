@@ -1,277 +1,285 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { SongData, SongLyric, ScoreData } from '../types';
-import { generateSongAudio } from '../services/geminiService';
-
-interface FloatingWord extends SongLyric {
-  id: number;
-  x: number;
-  y: number;
-  active: boolean;
-  clicked: boolean;
-  missed: boolean;
-  spawnTime: number;
-}
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { WordInstance, ScoreData, DifficultyLevel, Character } from '../types';
 
 interface KaraokeArenaProps {
-  song: SongData;
-  voiceName?: string;
+  lyricsString: string;
+  difficulty: DifficultyLevel;
+  character: Character;
   onFinish: (score: ScoreData) => void;
+  onAbort: () => void;
 }
 
-const KaraokeArena: React.FC<KaraokeArenaProps> = ({ song, voiceName = 'Kore', onFinish }) => {
+const KaraokeArena: React.FC<KaraokeArenaProps> = ({ lyricsString, difficulty, character, onFinish, onAbort }) => {
   const [isPlaying, setIsPlaying] = useState(false);
-  const [startTime, setStartTime] = useState<number | null>(null);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [floatingWords, setFloatingWords] = useState<FloatingWord[]>([]);
-  const [score, setScore] = useState<ScoreData>({ hits: 0, misses: 0, accuracy: 0 });
-  const [nextWordIndex, setNextWordIndex] = useState(0);
-  const [feedback, setFeedback] = useState<{ text: string; x: number; y: number } | null>(null);
-  const [isAudioLoading, setIsAudioLoading] = useState(true);
+  const [words, setWords] = useState<WordInstance[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(-1);
+  const [displayScore, setDisplayScore] = useState({ hits: 0, misses: 0 }); 
+  const [pulse, setPulse] = useState(false);
+  
+  const timerRef = useRef<number | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  
+  const scoreRef = useRef({ hits: 0, misses: 0 });
+  const currentIndexRef = useRef(-1);
 
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const timerRef = useRef<number>();
-  const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // Difficulty parameters
+  // Easy: 1s click window, 1.4s tick
+  // Medium: 0.75s click window, 1.1s tick
+  // Hard: 0.5s click window, 0.8s tick
+  const settings = useMemo(() => {
+    switch (difficulty) {
+      case DifficultyLevel.HARD: return { tickRate: 800, activeWindow: 500 };
+      case DifficultyLevel.MEDIUM: return { tickRate: 1100, activeWindow: 750 };
+      case DifficultyLevel.EASY:
+      default: return { tickRate: 1400, activeWindow: 1000 };
+    }
+  }, [difficulty]);
 
   useEffect(() => {
-    const initAudio = async () => {
-      try {
-        const fullLyrics = song.lyrics.map(l => l.word).join(' ');
-        const base64Audio = await generateSongAudio(fullLyrics, voiceName);
-        
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        audioContextRef.current = ctx;
-
-        const binaryString = atob(base64Audio);
-        const len = binaryString.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-
-        const dataInt16 = new Int16Array(bytes.buffer);
-        const frameCount = dataInt16.length;
-        const buffer = ctx.createBuffer(1, frameCount, 24000);
-        const channelData = buffer.getChannelData(0);
-        for (let i = 0; i < frameCount; i++) {
-          channelData[i] = dataInt16[i] / 32768.0;
-        }
-
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(ctx.destination);
-        audioSourceRef.current = source;
-        
-        setIsAudioLoading(false);
-      } catch (err) {
-        console.error("Audio init error:", err);
-        setIsAudioLoading(false);
-      }
-    };
-
-    initAudio();
+    // Limit to first 99 words as requested
+    const list = lyricsString
+      .split(/\s+/)
+      .filter(w => w.length > 0)
+      .slice(0, 99) 
+      .map((text, i) => ({
+        text: text.toUpperCase(),
+        id: i,
+        x: 15 + Math.random() * 70, 
+        y: 20 + Math.random() * 60,
+        active: false,
+        clicked: false,
+        missed: false
+      }));
+    setWords(list);
+    audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    
     return () => {
-      if (audioSourceRef.current) {
-        try { audioSourceRef.current.stop(); } catch(e) {}
-      }
-      if (audioContextRef.current) audioContextRef.current.close();
+      if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [song, voiceName]);
+  }, [lyricsString]);
 
-  const startLevel = () => {
-    if (audioSourceRef.current) audioSourceRef.current.start();
-    setStartTime(Date.now());
-    setIsPlaying(true);
+  const playTickSound = () => {
+    if (!audioCtxRef.current) return;
+    const osc = audioCtxRef.current.createOscillator();
+    const gain = audioCtxRef.current.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(currentIndexRef.current % 4 === 0 ? 880 : 440, audioCtxRef.current.currentTime);
+    gain.gain.setValueAtTime(0.04, audioCtxRef.current.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtxRef.current.currentTime + 0.1);
+    osc.connect(gain);
+    gain.connect(audioCtxRef.current.destination);
+    osc.start();
+    osc.stop(audioCtxRef.current.currentTime + 0.1);
   };
 
-  useEffect(() => {
-    if (!isPlaying || !startTime) return;
-
-    const update = () => {
-      const elapsed = (Date.now() - startTime) / 1000;
-      setCurrentTime(elapsed);
-      
-      if (nextWordIndex >= song.lyrics.length && floatingWords.every(w => w.clicked || w.missed)) {
-        setTimeout(() => {
-          onFinish({
-            ...score,
-            accuracy: Math.round((score.hits / (score.hits + score.misses || 1)) * 100)
-          });
-        }, 1500);
-        return;
-      }
-      timerRef.current = requestAnimationFrame(update);
-    };
-
-    timerRef.current = requestAnimationFrame(update);
-    return () => {
-      if (timerRef.current) cancelAnimationFrame(timerRef.current);
-    };
-  }, [isPlaying, startTime, nextWordIndex, floatingWords, score, onFinish, song.lyrics.length]);
-
-  useEffect(() => {
-    if (!isPlaying) return;
+  const nextTick = useCallback(() => {
+    currentIndexRef.current += 1;
+    const nextIdx = currentIndexRef.current;
     
-    // Increased from 6.0 to 10.0 seconds to show words extremely early
-    const spawnWindow = currentTime + 10.0;
-    
-    const wordsToSpawn = song.lyrics
-      .slice(nextWordIndex)
-      .filter(l => l.startTime <= spawnWindow);
-
-    if (wordsToSpawn.length > 0) {
-      const newFloatingWords = wordsToSpawn.map((l, i) => ({
-        ...l,
-        id: nextWordIndex + i,
-        x: 15 + Math.random() * 70, 
-        y: 25 + Math.random() * 50,
-        active: true,
-        clicked: false,
-        missed: false,
-        spawnTime: currentTime
-      }));
-
-      setFloatingWords(prev => [...prev, ...newFloatingWords]);
-      setNextWordIndex(prev => prev + wordsToSpawn.length);
-    }
-  }, [currentTime, isPlaying, song.lyrics, nextWordIndex]);
-
-  useEffect(() => {
-    setFloatingWords(prev => prev.map(w => {
-      // Allow more time to click (1.5s instead of 0.8s)
-      if (!w.clicked && !w.missed && currentTime > w.startTime + 1.5) {
-        setScore(s => ({ ...s, misses: s.misses + 1 }));
-        return { ...w, missed: true, active: false };
-      }
-      return w;
-    }));
-  }, [currentTime]);
-
-  const handleWordClick = useCallback((wordId: number, e: React.MouseEvent) => {
-    setFloatingWords(prev => {
-      const target = prev.find(w => w.id === wordId);
-      if (!target || target.clicked || target.missed) return prev;
-
-      const activeSequence = prev
-        .filter(w => !w.clicked && !w.missed)
-        .sort((a, b) => a.startTime - b.startTime);
-      
-      const isNextInSequence = activeSequence[0]?.id === wordId;
-      const timingDiff = Math.abs(currentTime - target.startTime);
-      
-      let rating = "";
-      if (isNextInSequence) {
-        if (timingDiff < 0.5) {
-          rating = "PERFECT!";
-          setScore(s => ({ ...s, hits: s.hits + 1 }));
-        } else if (timingDiff < 1.0) {
-          rating = "GOOD";
-          setScore(s => ({ ...s, hits: s.hits + 1 }));
-        } else {
-          rating = "OK";
-          setScore(s => ({ ...s, hits: s.hits + 1 }));
+    // Handle misses for the previous word
+    if (nextIdx > 0) {
+      const prevIdx = nextIdx - 1;
+      setWords(prevWords => {
+        const word = prevWords[prevIdx];
+        if (word && !word.clicked && !word.missed) {
+          scoreRef.current.misses += 1;
+          setDisplayScore({ ...scoreRef.current });
+          return prevWords.map(w => w.id === prevIdx ? { ...w, missed: true, active: false } : w);
         }
-      } else {
-        rating = "WAIT!";
-        setScore(s => ({ ...s, misses: s.misses + 1 }));
+        return prevWords;
+      });
+    }
+
+    // Check for end of game
+    if (nextIdx >= words.length) {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setTimeout(() => {
+        const total = scoreRef.current.hits + scoreRef.current.misses;
+        onFinish({
+          hits: scoreRef.current.hits,
+          misses: scoreRef.current.misses,
+          accuracy: total === 0 ? 0 : Math.round((scoreRef.current.hits / total) * 100)
+        });
+      }, 1500);
+      return;
+    }
+
+    setCurrentIndex(nextIdx);
+
+    // Activate the current word
+    setWords(prevWords => prevWords.map(w => 
+      w.id === nextIdx ? { ...w, active: true } : w
+    ));
+
+    // Deactivate visually after active window
+    setTimeout(() => {
+      setWords(prevWords => prevWords.map(w => 
+        w.id === nextIdx && !w.clicked ? { ...w, active: false } : w
+      ));
+    }, settings.activeWindow);
+
+    playTickSound();
+    setPulse(true);
+    setTimeout(() => setPulse(false), 100);
+  }, [words.length, settings, onFinish]);
+
+  const startLevel = () => {
+    setIsPlaying(true);
+    timerRef.current = window.setInterval(nextTick, settings.tickRate);
+  };
+
+  const handleAbort = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    onAbort();
+  };
+
+  const handleWordClick = (id: number) => {
+    if (id !== currentIndexRef.current) return;
+    setWords(prev => {
+      const word = prev[id];
+      if (word && word.active && !word.clicked && !word.missed) {
+        scoreRef.current.hits += 1;
+        setDisplayScore({ ...scoreRef.current });
+        return prev.map(w => w.id === id ? { ...w, clicked: true, active: false } : w);
       }
-
-      setFeedback({ text: rating, x: e.clientX, y: e.clientY });
-      setTimeout(() => setFeedback(null), 800);
-
-      return prev.map(w => w.id === wordId ? { ...w, clicked: true, active: false } : w);
+      return prev;
     });
-  }, [currentTime]);
-
-  if (isAudioLoading) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center space-y-4 bg-black">
-        <div className="w-16 h-16 border-4 border-yellow-400 border-t-transparent animate-spin pixel-border"></div>
-        <p className="text-yellow-400 text-xs animate-pulse">WARMING UP THE VOCALS...</p>
-      </div>
-    );
-  }
+  };
 
   if (!isPlaying) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center space-y-8 bg-black">
-        <div className="text-center space-y-4">
-          <h2 className="text-2xl text-yellow-400 uppercase">Stage Ready</h2>
-          <p className="text-[10px] text-gray-400">Click the words as they light up in rhythm!</p>
+        <div className="flex items-center gap-6 animate-pulse">
+            <img src={character.image} className="w-24 h-24 pixel-border bg-gray-800" style={{ imageRendering: 'pixelated' }} />
+            <h2 className="text-3xl text-yellow-400 uppercase font-black">{character.name}</h2>
         </div>
-        <button 
-          onClick={startLevel}
-          className="px-12 py-6 bg-pink-600 hover:bg-pink-500 text-white pixel-border text-2xl animate-bounce font-bold"
-        >
-          START SINGING
-        </button>
+        <div className="text-center space-y-4">
+          <p className="text-[10px] text-gray-400 max-w-xs leading-relaxed uppercase">
+            Difficulty: <span className="text-pink-500 font-bold">{difficulty}</span><br/>
+            Session: <span className="text-yellow-400 font-bold">{words.length} Words</span><br/>
+            Wait for the beat. Follow the 5-word preview.<br/>
+            Click when word is <span className="text-yellow-400">glowing</span>.
+          </p>
+        </div>
+        <div className="flex gap-4">
+          <button 
+            onClick={startLevel}
+            className="px-12 py-6 bg-pink-600 hover:bg-pink-500 text-white pixel-border text-2xl font-bold uppercase transition-transform hover:scale-105"
+          >
+            LET'S ROCK
+          </button>
+          <button 
+            onClick={onAbort}
+            className="px-6 py-6 bg-gray-800 hover:bg-gray-700 text-gray-400 pixel-border text-sm font-bold uppercase"
+          >
+            BACK
+          </button>
+        </div>
       </div>
     );
   }
 
+  const visibleWords = words.filter(w => 
+    !w.clicked && 
+    !w.missed && 
+    w.id >= currentIndex && 
+    w.id <= currentIndex + 5
+  );
+
   return (
-    <div className="relative w-full h-full overflow-hidden bg-gray-900 flex flex-col cursor-crosshair">
+    <div className={`relative w-full h-full overflow-hidden transition-colors duration-100 ${pulse ? 'bg-gray-800' : 'bg-gray-900'} flex flex-col`}>
+      {/* Progress Bar */}
+      <div className="absolute top-0 left-0 w-full h-2 bg-gray-800 z-30">
+        <div 
+          className="h-full bg-yellow-400 transition-all duration-300 shadow-[0_0_10px_#facc15]"
+          style={{ width: `${(currentIndex / words.length) * 100}%` }}
+        />
+      </div>
+
+      {/* HUD */}
       <div className="p-4 z-20 flex justify-between items-start pointer-events-none">
-        <div className="bg-black/90 p-3 border-2 border-yellow-400 text-[10px] space-y-1">
-          <p className="text-yellow-400">{song.title.toUpperCase()}</p>
-          <p className="text-white/60">{song.artist.toUpperCase()}</p>
+        <div className="flex items-start gap-4 bg-black/90 p-3 border-2 border-yellow-400">
+          <img 
+            src={character.image} 
+            className="w-12 h-12 pixel-border bg-gray-800" 
+            style={{ imageRendering: 'pixelated' }} 
+          />
+          <div className="text-[8px] space-y-1">
+            <p className="text-yellow-400 font-bold uppercase">{character.name}</p>
+            <p className="text-gray-500">KARAOKE BAR LIVE</p>
+          </div>
         </div>
-        <div className="bg-black/90 p-3 border-2 border-yellow-400 text-[10px] text-right space-y-1">
-          <p className="text-green-400">COMBO: {score.hits}</p>
-          <p className="text-red-400">MISS: {score.misses}</p>
+        <div className="flex flex-col items-end gap-2">
+          <div className="bg-black/90 p-3 border-2 border-yellow-400 text-[10px] text-right space-y-1">
+            <p className="text-green-400">HITS: {displayScore.hits}</p>
+            <p className="text-red-400">MISS: {displayScore.misses}</p>
+          </div>
+          <button 
+            onClick={handleAbort}
+            className="pointer-events-auto bg-red-600 hover:bg-red-500 text-white pixel-border px-4 py-2 text-[8px] font-bold uppercase transition-colors"
+          >
+            ABORT SONG
+          </button>
         </div>
       </div>
 
+      {/* Main Stage */}
       <div className="flex-1 relative">
-        {floatingWords.map(w => (
-          w.active && (
+        {visibleWords.map(w => {
+          const isActive = w.id === currentIndex && w.active;
+          const isPending = w.id > currentIndex;
+          
+          return (
             <button
               key={w.id}
-              onMouseDown={(e) => handleWordClick(w.id, e)}
+              onMouseDown={() => handleWordClick(w.id)}
+              disabled={isPending}
               className={`
-                absolute px-10 py-8 text-lg md:text-3xl pixel-border transition-all
-                ${currentTime >= w.startTime - 0.5 ? 'bg-yellow-400 text-black scale-125 z-50 shadow-[0_0_40px_rgba(253,224,71,0.9)]' : 'bg-gray-800 text-gray-400 opacity-40'}
-                hover:border-white select-none whitespace-nowrap
+                absolute transition-all duration-200 pixel-border select-none whitespace-nowrap font-black uppercase
+                ${isActive 
+                  ? 'px-10 py-8 text-2xl md:text-5xl bg-yellow-400 text-black scale-110 z-50 shadow-[0_0_60px_rgba(253,224,71,1)] animate-pulse' 
+                  : 'px-8 py-6 text-xl md:text-3xl bg-gray-800 text-gray-500 opacity-20 z-10 grayscale'
+                }
+                ${isPending ? 'cursor-default pointer-events-none' : 'cursor-pointer'}
               `}
               style={{
                 left: `${w.x}%`,
                 top: `${w.y}%`,
                 transform: `translate(-50%, -50%)`,
+                minWidth: '180px'
               }}
             >
-              {w.word.toUpperCase()}
+              {w.text}
+              {isPending && (
+                <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-[6px] md:text-[8px] bg-black text-gray-600 px-2 py-1">
+                  PREVIEW {w.id - currentIndex}
+                </div>
+              )}
             </button>
-          )
-        ))}
+          );
+        })}
 
-        {feedback && (
-          <div 
-            className="fixed pointer-events-none text-white text-xl font-bold uppercase animate-ping z-[100]"
-            style={{ left: feedback.x, top: feedback.y }}
+        {/* Miss Alert */}
+        {words.find(w => w.missed && w.id === currentIndex - 1) && (
+           <div 
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-red-600 text-6xl font-black uppercase animate-ping opacity-40 pointer-events-none"
           >
-            {feedback.text}
+            MISS!
           </div>
         )}
-
-        <div className="absolute bottom-0 left-0 w-full h-32 flex items-end justify-center gap-1 opacity-20 pointer-events-none">
-          {[...Array(32)].map((_, i) => (
-            <div 
-              key={i} 
-              className="w-2 bg-pink-500"
-              style={{ 
-                height: `${10 + Math.random() * 80}%`,
-                transition: 'height 0.1s ease-out'
-              }}
-            />
-          ))}
-        </div>
       </div>
 
-      <div className="h-2 bg-gray-800 w-full">
-        <div 
-          className="h-full bg-yellow-400 shadow-[0_0_10px_#facc15]" 
-          style={{ width: `${Math.min((currentTime / (song.lyrics[song.lyrics.length-1]?.startTime + 2)) * 100, 100)}%` }}
-        />
+      {/* Footer Beat Indicator */}
+      <div className="h-12 bg-black flex items-center justify-center border-t-4 border-gray-800">
+        <div className="flex gap-6">
+            {[0, 1, 2, 3].map((i) => (
+                <div 
+                    key={i} 
+                    className={`w-5 h-5 rounded-none border-2 border-gray-700 transition-all duration-75 ${currentIndex % 4 === i ? 'bg-pink-500 scale-150 rotate-45 shadow-[0_0_20px_#ec4899]' : 'bg-transparent'}`}
+                />
+            ))}
+        </div>
       </div>
     </div>
   );
